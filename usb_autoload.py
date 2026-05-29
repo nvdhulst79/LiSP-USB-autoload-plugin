@@ -69,6 +69,7 @@ class UsbAutoload(Plugin):
         self._seen = set()       # mount names present as of the last tick
         self._pending = set()    # arrived but not yet settled (one extra tick)
         self._processed = set()  # already prompted; don't re-prompt
+        self._startup_done = False  # one-shot: have we handled the first activation?
 
         # Poll timer (created but not started; lives on the Qt thread).
         self._timer = QTimer()
@@ -118,16 +119,27 @@ class UsbAutoload(Plugin):
         self._deactivate()
 
     def _activate(self):
-        """Start polling; snapshot current mounts so an already-inserted drive
-        at startup doesn't immediately fire."""
+        """Start polling.
+
+        Normally we snapshot current mounts into ``_seen`` so an already-inserted
+        drive doesn't immediately fire. With ``check_at_startup`` enabled, the
+        very first activation starts from an empty snapshot instead, so a drive
+        left in the machine across a power cycle gets picked up. The flag is
+        one-shot: later reactivations (layout switches) won't re-prompt for the
+        same stick.
+        """
         if self._active:
             return
         self._active = True
 
         base = drive_scanner.resolve_mount_base(self._cfg("mount_base"))
-        self._seen = drive_scanner.list_mounts(base)
+        if self._cfg("check_at_startup") and not self._startup_done:
+            self._seen = set()
+        else:
+            self._seen = drive_scanner.list_mounts(base)
         self._pending = set()
         self._processed = set()
+        self._startup_done = True
 
         self._timer.setInterval(self._cfg("poll_ms"))
         self._timer.start()

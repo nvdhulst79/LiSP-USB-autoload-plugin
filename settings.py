@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # default.json (that file is the source of truth LiSP persists).
 CONFIG_DEFAULTS = {
     "enabled": True,
+    "check_at_startup": False,
     "mount_base": "/media/$USER",
     "poll_ms": 1500,
     "scan_recursive": True,
@@ -105,6 +106,7 @@ class UsbAutoloadSettings(SettingsPage):
         self.layout().addWidget(self.generalGroup)
 
         self.enabledCheck = QCheckBox(self.generalGroup)
+        self.checkAtStartupCheck = QCheckBox(self.generalGroup)
 
         self.mountBaseEdit = QLineEdit(self.generalGroup)
         self.mountBaseLabel = QLabel()
@@ -117,6 +119,7 @@ class UsbAutoloadSettings(SettingsPage):
 
         form = self.generalGroup.layout()
         form.addRow(self.enabledCheck)
+        form.addRow(self.checkAtStartupCheck)
         form.addRow(self.mountBaseLabel, self.mountBaseEdit)
         form.addRow(self.pollLabel, self.pollSpin)
 
@@ -155,6 +158,12 @@ class UsbAutoloadSettings(SettingsPage):
         self.enabledCheck.setText(
             translate("UsbAutoload", "Watch for inserted USB drives")
         )
+        self.checkAtStartupCheck.setText(
+            translate(
+                "UsbAutoload",
+                "Also check for drives already mounted at startup",
+            )
+        )
         self.mountBaseLabel.setText(translate("UsbAutoload", "Mount directory:"))
         self.mountBaseEdit.setPlaceholderText("/media/$USER")
         self.pollLabel.setText(translate("UsbAutoload", "Poll interval:"))
@@ -173,6 +182,9 @@ class UsbAutoloadSettings(SettingsPage):
         settings = settings or {}
         self.enabledCheck.setChecked(
             settings.get("enabled", CONFIG_DEFAULTS["enabled"])
+        )
+        self.checkAtStartupCheck.setChecked(
+            settings.get("check_at_startup", CONFIG_DEFAULTS["check_at_startup"])
         )
         self.mountBaseEdit.setText(
             settings.get("mount_base", CONFIG_DEFAULTS["mount_base"])
@@ -197,6 +209,7 @@ class UsbAutoloadSettings(SettingsPage):
         """Serialize the page's widgets back into a config dict."""
         return {
             "enabled": self.enabledCheck.isChecked(),
+            "check_at_startup": self.checkAtStartupCheck.isChecked(),
             "mount_base": self.mountBaseEdit.text().strip()
             or CONFIG_DEFAULTS["mount_base"],
             "poll_ms": self.pollSpin.value(),

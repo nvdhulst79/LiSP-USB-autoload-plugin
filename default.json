@@ -2,6 +2,7 @@
   "_version_": "0.1",
   "_enabled_": true,
   "enabled": true,
+  "check_at_startup": false,
   "mount_base": "/media/$USER",
   "poll_ms": 1500,
   "scan_recursive": true,
