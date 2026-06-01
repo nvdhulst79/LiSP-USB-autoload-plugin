@@ -25,6 +25,25 @@ drive's audio files. Built for a single-operator, kiosk-style show machine
   - **Load audio files** → appends one cart per audio file to the current
     Cart Layout (overflow auto-creates pages; the insert is undoable).
 
+### Drives present at startup
+
+- By default the watcher only reacts to drives inserted *after* LiSP is running;
+  a stick already in the machine at launch is ignored. Turn on **"Also check for
+  drives already mounted at startup"** to have it picked up on the first poll —
+  handy for a kiosk that powers on with the show stick already plugged in.
+- For that startup drive the prompt can be skipped entirely, so a normal show
+  start needs no keyboard. The **"On startup, automatically"** policy chooses
+  what to do (load a session, load audio, or prefer a session and fall back to
+  audio), and **"Auto-confirm after"** controls how:
+  - With a countdown (e.g. 5 s) the usual dialog still appears with that action
+    pre-selected and counting down in its label, auto-confirming when it reaches
+    zero. Clicking any button overrides it and cancels the countdown.
+  - Set to *Immediately* (0 s) it acts at once with no dialog.
+
+  This is safe only at startup, where the Cart Layout is freshly created and
+  there is nothing to overwrite. Drives inserted while a show is running always
+  fall through to the plain prompt regardless of this setting.
+
 ## Requirements
 
 - **Linux Show Player**, `develop` branch (Python ≥ 3.10, PyQt5, GStreamer).
@@ -50,6 +69,9 @@ ln -s /path/to/this/repo /path/to/linux-show-player/lisp/plugins/usb_autoload
 | Setting | Default | Notes |
 |---|---|---|
 | Watch for inserted USB drives | on | master enable for the watcher |
+| Also check for drives already mounted at startup | off | pick up a stick left in the machine across a power cycle |
+| On startup, automatically | Ask | startup action: Ask / Load session / Load audio files / Prefer session, else audio (only applies to a startup drive) |
+| Auto-confirm after | 5 s | countdown before the startup action fires; 0 = act immediately with no dialog |
 | Mount directory | `/media/$USER` | falls back to `/run/media/$USER` |
 | Poll interval | 1500 ms | |
 | Scan subfolders | on | with a maximum depth (0 = unlimited) |

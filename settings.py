@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 CONFIG_DEFAULTS = {
     "enabled": True,
     "check_at_startup": False,
+    "startup_action": "ask",
+    "startup_timeout_s": 5,
     "mount_base": "/media/$USER",
     "poll_ms": 1500,
     "scan_recursive": True,
@@ -60,9 +62,23 @@ POLL_MS_MAX = 10000
 # 0 = unlimited depth (only meaningful while "scan subfolders" is on).
 MAX_DEPTH_MAX = 16
 
+# Upper bound for the startup auto-confirm countdown (seconds); 0 means act
+# immediately with no dialog at all.
+STARTUP_TIMEOUT_MAX = 60
+
 AUDIO_SORT_CHOICES = [
     ("Name (A→Z)", "name"),
     ("Modification time (oldest first)", "mtime"),
+]
+
+# What to do automatically for a drive already present at startup. "ask" keeps
+# the interactive prompt; the others auto-apply (falling back to the other
+# content type when the preferred one isn't on the stick).
+STARTUP_ACTION_CHOICES = [
+    ("Ask", "ask"),
+    ("Load session", "session"),
+    ("Load audio files", "audio"),
+    ("Prefer session, else audio", "prefer_session"),
 ]
 
 
@@ -107,6 +123,23 @@ class UsbAutoloadSettings(SettingsPage):
 
         self.enabledCheck = QCheckBox(self.generalGroup)
         self.checkAtStartupCheck = QCheckBox(self.generalGroup)
+        self.checkAtStartupCheck.toggled.connect(self._on_startup_deps_changed)
+
+        self.startupActionCombo = _build_combo(
+            self.generalGroup, STARTUP_ACTION_CHOICES
+        )
+        self.startupActionCombo.currentIndexChanged.connect(
+            self._on_startup_deps_changed
+        )
+        self.startupActionLabel = QLabel()
+
+        self.startupTimeoutSpin = QSpinBox(self.generalGroup)
+        self.startupTimeoutSpin.setRange(0, STARTUP_TIMEOUT_MAX)
+        self.startupTimeoutSpin.setSuffix(" s")
+        self.startupTimeoutSpin.setSpecialValueText(
+            translate("UsbAutoload", "Immediately (no dialog)")
+        )
+        self.startupTimeoutLabel = QLabel()
 
         self.mountBaseEdit = QLineEdit(self.generalGroup)
         self.mountBaseLabel = QLabel()
@@ -120,8 +153,25 @@ class UsbAutoloadSettings(SettingsPage):
         form = self.generalGroup.layout()
         form.addRow(self.enabledCheck)
         form.addRow(self.checkAtStartupCheck)
+        form.addRow(self.startupActionLabel, self.startupActionCombo)
+        form.addRow(self.startupTimeoutLabel, self.startupTimeoutSpin)
         form.addRow(self.mountBaseLabel, self.mountBaseEdit)
         form.addRow(self.pollLabel, self.pollSpin)
+
+    def _on_startup_deps_changed(self, *_):
+        """Keep the startup-action widgets' enabled state coherent.
+
+        The auto-action is only ever consulted for a drive already mounted at
+        startup, so it's meaningless unless "check at startup" is on; the
+        countdown in turn only applies once an action other than "Ask" is
+        picked.
+        """
+        at_startup = self.checkAtStartupCheck.isChecked()
+        self.startupActionCombo.setEnabled(at_startup)
+        self.startupActionLabel.setEnabled(at_startup)
+        acts = at_startup and self.startupActionCombo.currentData() != "ask"
+        self.startupTimeoutSpin.setEnabled(acts)
+        self.startupTimeoutLabel.setEnabled(acts)
 
     def _build_scan_group(self):
         """Recursion, depth limit, and audio insertion order."""
@@ -164,6 +214,12 @@ class UsbAutoloadSettings(SettingsPage):
                 "Also check for drives already mounted at startup",
             )
         )
+        self.startupActionLabel.setText(
+            translate("UsbAutoload", "On startup, automatically:")
+        )
+        self.startupTimeoutLabel.setText(
+            translate("UsbAutoload", "Auto-confirm after:")
+        )
         self.mountBaseLabel.setText(translate("UsbAutoload", "Mount directory:"))
         self.mountBaseEdit.setPlaceholderText("/media/$USER")
         self.pollLabel.setText(translate("UsbAutoload", "Poll interval:"))
@@ -186,6 +242,14 @@ class UsbAutoloadSettings(SettingsPage):
         self.checkAtStartupCheck.setChecked(
             settings.get("check_at_startup", CONFIG_DEFAULTS["check_at_startup"])
         )
+        _select_combo_value(
+            self.startupActionCombo,
+            settings.get("startup_action", CONFIG_DEFAULTS["startup_action"]),
+        )
+        self.startupTimeoutSpin.setValue(
+            settings.get("startup_timeout_s", CONFIG_DEFAULTS["startup_timeout_s"])
+        )
+        self._on_startup_deps_changed()
         self.mountBaseEdit.setText(
             settings.get("mount_base", CONFIG_DEFAULTS["mount_base"])
         )
@@ -210,6 +274,8 @@ class UsbAutoloadSettings(SettingsPage):
         return {
             "enabled": self.enabledCheck.isChecked(),
             "check_at_startup": self.checkAtStartupCheck.isChecked(),
+            "startup_action": self.startupActionCombo.currentData(),
+            "startup_timeout_s": self.startupTimeoutSpin.value(),
             "mount_base": self.mountBaseEdit.text().strip()
             or CONFIG_DEFAULTS["mount_base"],
             "poll_ms": self.pollSpin.value(),

@@ -3,6 +3,8 @@
   "_enabled_": true,
   "enabled": true,
   "check_at_startup": false,
+  "startup_action": "ask",
+  "startup_timeout_s": 5,
   "mount_base": "/media/$USER",
   "poll_ms": 1500,
   "scan_recursive": true,

@@ -20,6 +20,14 @@ since loading a session is destructive) to:
 * **Load audio files** — append one cart per audio file to the current Cart
   Layout (``GstBackend.add_cue_from_files``).
 
+For a drive already present at startup the operator can skip the keyboard
+entirely: a configured ``startup_action`` is applied automatically. With a
+non-zero ``startup_timeout_s`` the dialog still appears with that action as a
+counting-down default the operator can override; with a zero timeout it acts
+immediately and silently. This is safe only at startup, where the Cart Layout
+is freshly created and there is nothing to overwrite — drives inserted while a
+show is running always fall through to the plain prompt.
+
 Detection is poll-based on purpose: the show machine runs a desktop
 auto-mounter (pcmanfm/udisks), so polling its mount dir needs no root, no extra
 dependency, and no thread marshalling — the timer already runs on the Qt
@@ -69,6 +77,7 @@ class UsbAutoload(Plugin):
         self._seen = set()       # mount names present as of the last tick
         self._pending = set()    # arrived but not yet settled (one extra tick)
         self._processed = set()  # already prompted; don't re-prompt
+        self._startup_mounts = set()  # names present at startup -> auto-action eligible
         self._startup_done = False  # one-shot: have we handled the first activation?
 
         # Poll timer (created but not started; lives on the Qt thread).
@@ -133,10 +142,16 @@ class UsbAutoload(Plugin):
         self._active = True
 
         base = drive_scanner.resolve_mount_base(self._cfg("mount_base"))
+        present = drive_scanner.list_mounts(base)
         if self._cfg("check_at_startup") and not self._startup_done:
+            # Treat everything already mounted as a fresh arrival so it gets
+            # picked up, and remember those names: only they are eligible for
+            # the keyboard-free startup auto-action.
             self._seen = set()
+            self._startup_mounts = set(present)
         else:
-            self._seen = drive_scanner.list_mounts(base)
+            self._seen = present
+            self._startup_mounts = set()
         self._pending = set()
         self._processed = set()
         self._startup_done = True
@@ -156,6 +171,7 @@ class UsbAutoload(Plugin):
         self._seen = set()
         self._pending = set()
         self._processed = set()
+        self._startup_mounts = set()
         self._active = False
         logger.info("USB Auto-Load: deactivated.")
 
@@ -188,6 +204,7 @@ class UsbAutoload(Plugin):
         for name in self._seen - current:
             self._processed.discard(name)
             self._pending.discard(name)
+            self._startup_mounts.discard(name)
 
         to_process = []
         for name in current:
@@ -234,22 +251,73 @@ class UsbAutoload(Plugin):
             logger.debug("USB Auto-Load: %s has no loadable content.", mount_path)
             return
 
-        action = self._prompt(contents)
+        # A drive present at startup may be auto-loaded without the keyboard;
+        # any later insertion always goes through the plain prompt. Consume the
+        # startup flag either way so a mid-show re-insert isn't treated as one.
+        is_startup = name in self._startup_mounts
+        self._startup_mounts.discard(name)
+
+        auto_action = self._resolve_startup_action(contents) if is_startup else None
+        if auto_action is not None:
+            timeout_s = self._cfg("startup_timeout_s")
+            if timeout_s > 0:
+                action, auto_fired = self._prompt(
+                    contents, default_action=auto_action, timeout_s=timeout_s
+                )
+            else:
+                action, auto_fired = auto_action, True
+        else:
+            action, auto_fired = self._prompt(contents)
+
         if action == "session":
-            self._load_session(contents)
+            # An auto-fired choice skips the multi-session picker (it would just
+            # reintroduce the keyboard); an explicit click still gets to choose.
+            self._load_session(contents, auto=auto_fired)
         elif action == "audio":
             self._load_audio(contents)
         # "cancel" -> already marked processed; do nothing.
+
+    def _resolve_startup_action(self, contents):
+        """Map the configured startup policy onto what the drive actually holds.
+
+        Returns ``"session"`` / ``"audio"`` (the action to auto-apply) or
+        ``None`` to fall back to the interactive prompt — either because the
+        policy is ``"ask"`` or the drive carries nothing the policy can act on.
+        Both session-leaning policies prefer a session and fall back to audio;
+        the audio policy is the mirror image.
+        """
+        policy = self._cfg("startup_action")
+        if policy == "ask":
+            return None
+
+        preferred = "audio" if policy == "audio" else "session"
+        present = {
+            "session": bool(contents.sessions),
+            "audio": bool(contents.audio),
+        }
+        fallback = "session" if preferred == "audio" else "audio"
+        for choice in (preferred, fallback):
+            if present[choice]:
+                return choice
+        return None
 
     # ------------------------------------------------------------------ #
     # Dialog + dispatch                                                  #
     # ------------------------------------------------------------------ #
 
-    def _prompt(self, contents):
-        """Show the load dialog; return ``"session"`` / ``"audio"`` / ``"cancel"``.
+    def _prompt(self, contents, default_action=None, timeout_s=0):
+        """Show the load dialog; return ``(action, auto_fired)``.
 
-        Buttons depend on what was found (sessions, audio, or both). Loading a
-        session replaces the running show, so the dialog defaults to Cancel.
+        ``action`` is ``"session"`` / ``"audio"`` / ``"cancel"``. Buttons depend
+        on what was found (sessions, audio, or both). Loading a session replaces
+        the running show, so the dialog normally defaults to Cancel.
+
+        When ``default_action`` is given with ``timeout_s > 0`` (the keyboard-free
+        startup path), that button becomes the default and counts down in its
+        label; left untouched it auto-clicks at zero and ``auto_fired`` returns
+        True. Clicking any button cancels the countdown and counts as a manual
+        choice. The ``QTimer`` keeps ticking inside ``exec()``'s nested event
+        loop, so no extra threading is needed.
         """
         box = QMessageBox(self.app.window)
         box.setIcon(QMessageBox.Question)
@@ -268,13 +336,53 @@ class UsbAutoload(Plugin):
         cancel_btn = box.addButton(QMessageBox.Cancel)
         box.setDefaultButton(cancel_btn)
 
+        target_btn = session_btn if default_action == "session" else (
+            audio_btn if default_action == "audio" else None
+        )
+        auto = {"fired": False}
+        if target_btn is not None and timeout_s > 0:
+            self._attach_countdown(box, target_btn, int(timeout_s), auto)
+
         box.exec()
         clicked = box.clickedButton()
         if clicked is session_btn:
-            return "session"
+            return "session", auto["fired"]
         if clicked is audio_btn:
-            return "audio"
-        return "cancel"
+            return "audio", auto["fired"]
+        return "cancel", auto["fired"]
+
+    @staticmethod
+    def _attach_countdown(box, target_btn, seconds, auto):
+        """Make ``target_btn`` the default and have it auto-click after a countdown.
+
+        The remaining seconds are shown in the button label; ``auto["fired"]`` is
+        set just before the automatic click so the caller can tell an auto-load
+        from a manual one. Any button click stops the timer.
+        """
+        box.setDefaultButton(target_btn)
+        base_text = target_btn.text()
+        remaining = [seconds]
+
+        def label(n):
+            return translate("UsbAutoload", "%s (%d)") % (base_text, n)
+
+        target_btn.setText(label(remaining[0]))
+
+        countdown = QTimer(box)
+        countdown.setInterval(1000)
+
+        def tick():
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                countdown.stop()
+                auto["fired"] = True
+                target_btn.click()
+            else:
+                target_btn.setText(label(remaining[0]))
+
+        countdown.timeout.connect(tick)
+        box.buttonClicked.connect(lambda _btn: countdown.stop())
+        countdown.start()
 
     @staticmethod
     def _summary(contents):
@@ -293,15 +401,19 @@ class UsbAutoload(Plugin):
         found = translate("UsbAutoload", " and ").join(parts)
         return translate("UsbAutoload", "Found %s on the inserted drive.") % found
 
-    def _load_session(self, contents):
+    def _load_session(self, contents, auto=False):
         """Replace the running show with a session off the drive.
 
-        With more than one ``*.lsp`` present we let the operator choose;
-        otherwise the single (newest) one is used. ``open_session`` runs the
-        full migrate-and-load path and emits ``session_loaded`` at the end,
-        which re-drives our activation gate.
+        With more than one ``*.lsp`` present we normally let the operator choose;
+        on the auto-load path we silently take the newest (sessions are sorted
+        newest-first) so the keyboard-free flow isn't broken by a picker.
+        ``open_session`` runs the full migrate-and-load path and emits
+        ``session_loaded`` at the end, which re-drives our activation gate.
         """
-        path = self._choose_session(contents.sessions)
+        if auto:
+            path = contents.sessions[0] if contents.sessions else None
+        else:
+            path = self._choose_session(contents.sessions)
         if path is None:
             return
         logger.info("USB Auto-Load: loading session %s.", path)
